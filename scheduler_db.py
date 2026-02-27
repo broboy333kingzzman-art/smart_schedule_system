@@ -34,12 +34,16 @@ def generate_timetable(db):
 
     for section in sections:
 
-        timetable[section.name] = {}
+       timetable[section.name] = {}
 
-        year = db.query(YearDB).get(section.year_id)
+        year = db.query(YearDB).filter(YearDB.id == section.year_id).first()
+        if not year:
+            continue
+
         subjects = db.query(SubjectDB).filter(
             SubjectDB.year_id == year.id
         ).all()
+        print("DEBUG:", section.name, "Subjects found:", len(subjects))
 
         subject_pool = []
 
