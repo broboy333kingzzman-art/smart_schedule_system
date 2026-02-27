@@ -1,162 +1,140 @@
 import random
 from models_db import (
+    AcademicSettingsDB,
+    StreamDB,
+    DepartmentDB,
     YearDB,
     SectionDB,
     SubjectDB,
     TeacherDB,
     TeacherAvailabilityDB,
-    AcademicSettingsDB
 )
+
 
 def generate_timetable(db):
 
     settings = db.query(AcademicSettingsDB).first()
+    if not settings:
+        return {}
 
     days = [d.strip() for d in settings.day_labels.split(",")]
     hours = [h.strip() for h in settings.hour_labels.split(",")]
 
     timetable = {}
     teacher_busy = {}
-    teacher_hours = {}
+    teacher_load = {}
 
-    teachers = db.query(TeacherDB).all()
-
-    # Initialize teacher workload
-    for teacher in teachers:
-        teacher_hours[teacher.id] = 0
-
-    # Initialize teacher busy slots
+    # Initialize teacher busy tracker
     for day in days:
         for hour in hours:
             teacher_busy[(day, hour)] = []
+
+    # Initialize teacher workload tracker
+    teachers = db.query(TeacherDB).all()
+    for teacher in teachers:
+        teacher_load[teacher.id] = 0
 
     sections = db.query(SectionDB).all()
 
     for section in sections:
 
-        timetable[section.name] = {}
-
-        year = db.query(YearDB).filter(YearDB.id == section.year_id).first()
+        # Get hierarchy
+        year = db.query(YearDB).filter(
+            YearDB.id == section.year_id
+        ).first()
         if not year:
             continue
+
+        department = db.query(DepartmentDB).filter(
+            DepartmentDB.id == year.department_id
+        ).first()
+        if not department:
+            continue
+
+        stream = db.query(StreamDB).filter(
+            StreamDB.id == department.stream_id
+        ).first()
+        if not stream:
+            continue
+
+        # Unique display key
+        section_key = (
+            f"{stream.name} | "
+            f"{department.name} | "
+            f"{year.name} | "
+            f"{section.name}"
+        )
+
+        timetable[section_key] = {}
 
         subjects = db.query(SubjectDB).filter(
             SubjectDB.year_id == year.id
         ).all()
-        print("DEBUG:", section.name, "Subjects found:", len(subjects))
 
         subject_pool = []
 
-        # Core subjects
+        # Build subject pool
         for subject in subjects:
+            hours_required = subject.hours_per_week or 0
+
             if not subject.is_elective:
                 subject_pool.extend(
-                    [(subject, None)] * subject.hours_per_week
+                    [(subject, None)] * hours_required
                 )
 
-        # Elective grouping
-        elective_groups = {}
-        for subject in subjects:
-            if subject.is_elective:
-                elective_groups.setdefault(
-                    subject.elective_group, []
-                ).append(subject)
-
-        for group_name, group_subjects in elective_groups.items():
-            # All electives in same group share slot count
-            hours_required = group_subjects[0].hours_per_week
-            subject_pool.extend(
-                [("ELECTIVE_GROUP", group_subjects)] * hours_required
-            )
-
         random.shuffle(subject_pool)
-
-        slot_index = 0
 
         for day in days:
             for hour in hours:
 
-                if slot_index < len(subject_pool):
-                    entry = subject_pool[slot_index]
-                else:
-                    entry = None
+                assigned = False
 
-                slot_index += 1
+                for entry in subject_pool:
 
-                if entry is None:
-                    timetable[section.name][(day, hour)] = {
-                        "subject": "Free",
-                        "teacher": ""
-                    }
-                    continue
-
-                # Core subject
-                if entry[0] != "ELECTIVE_GROUP":
-
-                    subject = entry[0]
+                    subject, _ = entry
 
                     eligible_teachers = [
                         t for t in subject.teachers
-                        if teacher_hours[t.id] < t.max_hours
-                        and t.id not in teacher_busy[(day, hour)]
-                        and db.query(TeacherAvailabilityDB).filter(
-                            TeacherAvailabilityDB.teacher_id == t.id,
-                            TeacherAvailabilityDB.day == day,
-                            TeacherAvailabilityDB.hour == hour,
-                            TeacherAvailabilityDB.available == True
-                        ).first()
+                        if teacher_load[t.id] < t.max_hours_per_week
                     ]
 
-                    if eligible_teachers:
-                        teacher = random.choice(eligible_teachers)
-                        teacher_hours[teacher.id] += 1
-                        teacher_busy[(day, hour)].append(teacher.id)
+                    for teacher in eligible_teachers:
 
-                        timetable[section.name][(day, hour)] = {
+                        # Check availability
+                        availability = db.query(TeacherAvailabilityDB).filter(
+                            TeacherAvailabilityDB.teacher_id == teacher.id,
+                            TeacherAvailabilityDB.day == day,
+                            TeacherAvailabilityDB.hour == hour
+                        ).first()
+
+                        if not availability:
+                            continue
+
+                        if not availability.is_available:
+                            continue
+
+                        if teacher.id in teacher_busy[(day, hour)]:
+                            continue
+
+                        # Assign
+                        timetable[section_key][(day, hour)] = {
                             "subject": subject.name,
                             "teacher": teacher.name
                         }
-                    else:
-                        timetable[section.name][(day, hour)] = {
-                            "subject": subject.name,
-                            "teacher": "No Teacher"
-                        }
 
-                # Elective group
-                else:
+                        teacher_busy[(day, hour)].append(teacher.id)
+                        teacher_load[teacher.id] += 1
 
-                    group_subjects = entry[1]
-                    elective_output = []
+                        subject_pool.remove(entry)
+                        assigned = True
+                        break
 
-                    for subject in group_subjects:
+                    if assigned:
+                        break
 
-                        eligible_teachers = [
-                            t for t in subject.teachers
-                            if teacher_hours[t.id] < t.max_hours
-                            and t.id not in teacher_busy[(day, hour)]
-                            and db.query(TeacherAvailabilityDB).filter(
-                                TeacherAvailabilityDB.teacher_id == t.id,
-                                TeacherAvailabilityDB.day == day,
-                                TeacherAvailabilityDB.hour == hour,
-                                TeacherAvailabilityDB.available == True
-                            ).first()
-                        ]
-
-                        if eligible_teachers:
-                            teacher = random.choice(eligible_teachers)
-                            teacher_hours[teacher.id] += 1
-                            teacher_busy[(day, hour)].append(teacher.id)
-
-                            elective_output.append(
-                                f"{subject.name} ({teacher.name})"
-                            )
-                        else:
-                            elective_output.append(
-                                f"{subject.name} (No Teacher)"
-                            )
-
-                    timetable[section.name][(day, hour)] = {
-                        "subject": " | ".join(elective_output),
+                if not assigned:
+                    timetable[section_key][(day, hour)] = {
+                        "subject": "Free",
                         "teacher": ""
                     }
 
