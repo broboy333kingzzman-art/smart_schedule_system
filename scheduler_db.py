@@ -34,7 +34,7 @@ def generate_timetable(db):
 
     for section in sections:
 
-       timetable[section.name] = {}
+        timetable[section.name] = {}
 
         year = db.query(YearDB).filter(YearDB.id == section.year_id).first()
         if not year:
