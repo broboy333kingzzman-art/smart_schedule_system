@@ -38,26 +38,20 @@ def generate_timetable(db):
 
     for section in sections:
 
-        # Get hierarchy
-        year = db.query(YearDB).filter(
-            YearDB.id == section.year_id
-        ).first()
+        # Get full hierarchy safely using relationships
+        year = section.year
         if not year:
             continue
 
-        department = db.query(DepartmentDB).filter(
-            DepartmentDB.id == year.department_id
-        ).first()
+        department = year.department
         if not department:
             continue
 
-        stream = db.query(StreamDB).filter(
-            StreamDB.id == department.stream_id
-        ).first()
+        stream = department.stream
         if not stream:
             continue
 
-        # Unique display key
+        # Enterprise-safe unique key
         section_key = (
             f"{stream.name} | "
             f"{department.name} | "
@@ -67,9 +61,7 @@ def generate_timetable(db):
 
         timetable[section_key] = {}
 
-        subjects = db.query(SubjectDB).filter(
-            SubjectDB.year_id == year.id
-        ).all()
+        subjects = year.subjects
 
         subject_pool = []
 
@@ -89,18 +81,17 @@ def generate_timetable(db):
 
                 assigned = False
 
-                for entry in subject_pool:
+                for entry in list(subject_pool):
 
                     subject, _ = entry
 
                     eligible_teachers = [
                         t for t in subject.teachers
-                        if teacher_load[t.id] < t.max_hours_per_week
+                        if teacher_load[t.id] < t.max_hours
                     ]
 
                     for teacher in eligible_teachers:
 
-                        # Check availability
                         availability = db.query(TeacherAvailabilityDB).filter(
                             TeacherAvailabilityDB.teacher_id == teacher.id,
                             TeacherAvailabilityDB.day == day,
@@ -110,13 +101,13 @@ def generate_timetable(db):
                         if not availability:
                             continue
 
-                        if not availability.is_available:
+                        if not availability.available:
                             continue
 
                         if teacher.id in teacher_busy[(day, hour)]:
                             continue
 
-                        # Assign
+                        # Assign subject
                         timetable[section_key][(day, hour)] = {
                             "subject": subject.name,
                             "teacher": teacher.name
