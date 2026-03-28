@@ -38,7 +38,7 @@ def generate_timetable(db):
 
     for section in sections:
 
-        # Get full hierarchy safely using relationships
+        # Get hierarchy
         year = section.year
         if not year:
             continue
@@ -51,7 +51,7 @@ def generate_timetable(db):
         if not stream:
             continue
 
-        # Enterprise-safe unique key
+        # Unique key
         section_key = (
             f"{stream.name} | "
             f"{department.name} | "
@@ -63,16 +63,27 @@ def generate_timetable(db):
 
         subjects = year.subjects
 
+        # SAFETY: if no subjects → skip
+        if not subjects:
+            continue
+
         subject_pool = []
 
         # Build subject pool
         for subject in subjects:
-            hours_required = subject.hours_per_week or 0
+            hours_required = int(subject.hours_per_week or 0)
+
+            if hours_required <= 0:
+                continue
 
             if not subject.is_elective:
                 subject_pool.extend(
                     [(subject, None)] * hours_required
                 )
+
+        # SAFETY: if empty → skip
+        if not subject_pool:
+            continue
 
         random.shuffle(subject_pool)
 
@@ -85,9 +96,10 @@ def generate_timetable(db):
 
                     subject, _ = entry
 
+                    # 🔥 FINAL SAFE TEACHER SELECTION
                     eligible_teachers = [
-                        t for t in subject.teachers
-                        if teacher_load[t.id] < t.max_hours
+                        t for t in (subject.teachers or db.query(TeacherDB).all())
+                        if (t.max_hours is None) or (teacher_load[t.id] < t.max_hours)
                     ]
 
                     for teacher in eligible_teachers:
@@ -98,10 +110,8 @@ def generate_timetable(db):
                             TeacherAvailabilityDB.hour == hour
                         ).first()
 
-                        if not availability:
-                            continue
-
-                        if not availability.available:
+                        # SAFETY: if availability not set → allow
+                        if availability and not availability.available:
                             continue
 
                         if teacher.id in teacher_busy[(day, hour)]:
